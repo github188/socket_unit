@@ -22,10 +22,15 @@
 #define SOCKET_TYPE_INVALID	 	(0)
 #define SOCKET_TYPE_RESERVE		(1)
 #define SOCKET_TYPE_PLISTEN		(2)/*监听套接字，未加入epoll管理*/
-#define SOCKET_TYPE_PACCEPT		(3)/*accept返回，未加入epoll管理*/
-#define SOCKET_TYPE_CONNECTING  (4)
-#define SOCKET_TYPE_CONNECTED 	(5)	
+#define SOCKET_TYPE_LISTEN 		(3)
+#define SOCKET_TYPE_PACCEPT		(4)/*accept返回，未加入epoll管理*/
+#define SOCKET_TYPE_CONNECTING  (5)
+#define SOCKET_TYPE_CONNECTED 	(6)	
+#define SOCKET_TYPE_HALFCLOSE   (7)
 #define SOCKET_TYPE_BIND 		(8)	/*其它类型的文件描述符，比如stdin,stdout等*/
+
+
+
 
 
 
@@ -536,6 +541,171 @@ fail:
 
 
 
+static int socket_server_send_buffer(void * server_handle,struct socket * s,struct socket_message * ret_msg)
+{
+	if(NULL==server_handle || NULL==s || NULL==ret_msg)
+	{
+		dbg_printf("check the param!\n");
+		return(0);
+	}
+	struct socket_server * handle = (struct socket_server *)server_handle;
+
+	while(s->head)
+	{
+		struct write_buffer * tmp = s->head;
+		for(; ;)
+		{
+			int sz = write(s->fd,tmp->ptr,tmp->sz);
+			if(sz < 0 )
+			{
+				switch(errno)
+				{
+					case EINTR:
+						continue;
+					case EAGAIN:
+						return(-1);
+				}
+				socket_server_force_close(handle,s,ret_msg);
+				return(SOCKET_CLOSE);
+			}
+
+			s->wb_size -= sz;
+			if(sz != tmp->sz)
+			{
+				tmp->ptr += sz;
+				tmp->sz -= sz;
+				return(-1);
+			}
+			break;
+		}
+
+		s->head = tmp->next;
+		free(tmp->buffer);
+		tmp->buffer = NULL;
+		
+		free(tmp);
+		tmp = NULL;
+
+	}
+
+
+	s->tail = NULL;
+	/*应用层发送缓冲区数据发完，取消关注可写事件*/
+	sp_write(handle->event_fd, s->fd, s, false);
+
+	/*半关闭状态socket不可再调用send_buffer，如果发现这样做，直接强制关闭*/
+	if (s->type == SOCKET_TYPE_HALFCLOSE)
+	{
+		socket_server_force_close(handle, s, ret_msg);
+		return SOCKET_CLOSE;
+	}
+
+
+	return(0);
+	
+}
+
+
+
+/*增加一个发送buffer节点,n表示从该buffer的第几字节有效*/
+static int socket_server_append_buffer(struct socket *s, struct request_send * request,int n)
+{
+
+	if(NULL==s || NULL==request)
+	{
+		dbg_printf("check the param!\n");
+		return(0);
+	}
+
+	struct write_buffer * new_buf = calloc(1,sizeof(*new_buf));
+	if(NULL == new_buf)
+	{
+		dbg_printf("calloc is fail!\n");
+		return(-1);
+	}
+	new_buf->buffer = request->buffer;
+	new_buf->ptr = request->buffer + n;
+	new_buf->sz = request->sz - n;
+	new_buf->next = NULL;
+
+	s->wb_size += new_buf->sz;
+	if(NULL==s->head)
+	{
+		s->head=s->tail=new_buf;
+	}
+	else
+	{
+		s->tail->next = new_buf;
+		s->tail = new_buf;
+	}
+	
+	return(0);
+}
+
+
+
+static int socket_server_send_socket(void *server_handle,struct request_send * request, struct socket_message *ret_msg)
+{
+	if(NULL==server_handle || NULL==request || NULL == ret_msg)
+	{
+		dbg_printf("check the param!\n");
+		return(-1);
+	}
+	int id = request->id;
+	struct socket_server * handle = (struct socket_server *)server_handle;
+
+	struct socket * socket_node = &(handle->slot[id % MAX_SOCKET]);
+	if(socket_node->id != request->id )
+	{
+		dbg_printf("id is not peer!\n");
+		return(-1);
+
+	}
+	if(SOCKET_TYPE_INVALID==socket_node->type || SOCKET_TYPE_HALFCLOSE==socket_node->type || SOCKET_TYPE_PACCEPT==socket_node->type)
+	{
+		dbg_printf("the sockt type is not right!\n");
+		return(-1);
+	}
+
+	if(NULL == socket_node->head)
+	{
+
+		int n = write(socket_node->fd, request->buffer, request->sz);
+		if (n<0)
+		{
+			switch(errno)
+			{
+			case EINTR:
+			case EAGAIN:	
+				n = 0;
+				break;
+			default:
+				dbg_printf("socket-server: write to %d (fd=%d) error.",id,socket_node->fd);
+				socket_server_force_close(handle,socket_node,ret_msg);
+				return SOCKET_CLOSE;
+			}
+		}
+		if(n == request->sz)
+		{
+			return(0);
+		}
+		else  /*没有写完*/
+		{
+			socket_server_append_buffer(socket_node, request, n);
+			sp_write(handle->event_fd, socket_node->fd, socket_node, true);/*加入监控,当其可写的时候再通知*/	
+			return(-1);
+		}
+
+
+	}
+	else
+	{
+		socket_server_append_buffer(socket_node, request, 0);
+		return(-1);
+	
+	}
+	return(0);
+}
 
 
 
