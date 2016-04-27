@@ -2,8 +2,40 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <pthread.h>
+#include <errno.h>
+#include <string.h>
+#include <stdlib.h>
+#include <pthread.h>
+#include <stdio.h>
+#include <semaphore.h>
+#include <sys/file.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <sys/statfs.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <semaphore.h>
+#include <time.h>																				
+#include <sys/time.h>
+#include <dirent.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <fcntl.h>
+#include<sys/socket.h>
+#include<netinet/in.h>
+#include<arpa/inet.h>
+#include <arpa/inet.h>
+#include <stdarg.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include "socket_poll.h"
 #include "common.h"
-
+#include <stdint.h>
+#include "socket_server.h"
 
 #undef  DBG_ON
 #undef  FILE_NAME
@@ -161,7 +193,7 @@ union sockaddr_all
 {
 	struct sockaddr s;
 	struct sockaddr_in v4;
-	struct scokaddr_in6 v6;
+	struct sockaddr_in6 v6;
 };
 
 
@@ -198,10 +230,10 @@ static int socket_server_alloc_id(void * server_handle)
 			id = __sync_and_and_fetch(&(handle->alloc_id),0x7fffffff);
 		}
 
-		struct socket * socket_node = handle->slot[id % MAX_SOCKET];
+		struct socket * socket_node = &(handle->slot[id % MAX_SOCKET]);
 		if(SOCKET_TYPE_INVALID == socket_node->type)
 		{
-			if (__sync_bool_compare_and_swap(&handle->type, SOCKET_TYPE_INVALID, SOCKET_TYPE_RESERVE)) 
+			if (__sync_bool_compare_and_swap(&socket_node->type, SOCKET_TYPE_INVALID, SOCKET_TYPE_RESERVE)) 
 			{
 					return id;
 			} 
@@ -458,7 +490,7 @@ static int socket_server_open_socket(void * server_handle,struct request_open * 
 	struct addrinfo *ai_list = NULL;
 	struct addrinfo *ai_ptr  = NULL;
 	char port[16] = {0};
-	snpritnf(port,16,"%d",request->port);
+	snprintf(port,16,"%d",request->port);
 	memset(&ai_hints,0,sizeof(ai_hints));
 	ai_hints.ai_family = AF_UNSPEC;
 	ai_hints.ai_socktype = SOCK_STREAM;
@@ -806,7 +838,7 @@ static int socket_server_bind_socket(void *server_handle,struct request_bind * r
 		return(-1);
 	}
 	sp_nonblocking(request->fd);
-	ret_msg->data"bind";
+	ret_msg->data="bind";
 	return(0);
 }
 
@@ -828,7 +860,7 @@ static int socket_server_start_socket(void *server_handle,struct request_start *
 	ret_msg->ud = 0;
 	ret_msg->data = NULL;
 	ret_msg->opaque = request->opaque;
-	struct socket * socket_node = handle->slot[id % MAX_SOCKET];
+	struct socket * socket_node = &(handle->slot[id % MAX_SOCKET]);
 	if(SOCKET_TYPE_INVALID==socket_node->type || id != socket_node->id)
 	{
 		dbg_printf("not peer !\n");
@@ -940,7 +972,7 @@ static int socket_server_forward_message(struct socket_server *ss, struct socket
 	int n = (int)read(s->fd, buffer, sz);
 	if (n<0)
 	{
-		FREE(buffer);
+		free(buffer);
 		switch(errno) 
 		{
 		case EINTR:
@@ -1003,7 +1035,7 @@ static int socket_server_report_connect(struct socket_server *ss, struct socket 
 		sp_write(ss->event_fd, s->fd, s, false);	// 连接成功，取消关注可写事件
 		union sockaddr_all u;
 		socklen_t slen = sizeof(u);
-		if (getpeername(s->fd, &u.s, &slen) == 0)
+		if(getpeername(s->fd, &u.s, &slen) == 0)
 		{
 			void * sin_addr = (u.s.sa_family == AF_INET) ? (void*)&u.v4.sin_addr : (void *)&u.v6.sin6_addr;
 			if (inet_ntop(u.s.sa_family, sin_addr, ss->buffer, sizeof(ss->buffer))) {
@@ -1056,10 +1088,11 @@ static int socket_server_report_accept(struct socket_server *ss, struct socket *
 
 
 
-int  socket_server_poll(struct socket_server *ss, struct socket_message * result, int * more) {
+int  socket_server_poll(struct socket_server *ss, struct socket_message * result, int * more)
+{
 	for (;;) 
 	{
-		if (ss->checkctrl)
+		if (ss->check_ctrl)
 		{
 			if (socket_server_has_cmd(ss))
 			{
@@ -1071,7 +1104,7 @@ int  socket_server_poll(struct socket_server *ss, struct socket_message * result
 			} 
 			else 
 			{ 
-				ss->checkctrl = 0;
+				ss->check_ctrl = 0;
 			}
 		}
 
@@ -1079,7 +1112,7 @@ int  socket_server_poll(struct socket_server *ss, struct socket_message * result
 		if (ss->event_index == ss->event_n)
 		{
 			ss->event_n = sp_wait(ss->event_fd, ss->ev, MAX_EVENT);
-			ss->checkctrl = 1;
+			ss->check_ctrl = 1;
 			if (more)
 			{
 				*more = 0;
@@ -1093,15 +1126,18 @@ int  socket_server_poll(struct socket_server *ss, struct socket_message * result
 		}
 		struct event *e = &ss->ev[ss->event_index++];
 		struct socket *s = e->s;
-		if (s == NULL) {
+		if (s == NULL)
+		{
 			// dispatch pipe message at beginning
 			continue;
 		}
-		switch (s->type) {
+		switch (s->type) 
+		{
 		case SOCKET_TYPE_CONNECTING: /*正在进行连接*/
 			return socket_server_report_connect(ss, s, result);
 		case SOCKET_TYPE_LISTEN:
-			if (socket_server_report_accept(ss, s, result)) {
+			if (socket_server_report_accept(ss, s, result)) 
+			{
 				return SOCKET_ACCEPT;
 			} 
 			break;
@@ -1152,7 +1188,7 @@ static void socket_server_send_request(struct socket_server *ss, struct request_
 
 
 
-static int socket_server_open_request(struct socket_server *ss, struct request_package *req, uintptr_t opaque, const char *addr, int port)
+static int socket_server_open_request(struct socket_server *ss, struct request_package *req, unsigned int opaque, const char *addr, int port)
 {
 	int len = strlen(addr);
 	if (len + sizeof(req->u.open) > 256)
@@ -1170,7 +1206,8 @@ static int socket_server_open_request(struct socket_server *ss, struct request_p
 	return len;
 }
 
-int socket_server_connect(struct socket_server *ss, uintptr_t opaque, const char * addr, int port)
+
+int socket_server_connect(struct socket_server *ss, unsigned int opaque, const char * addr, int port)
 {
 	struct request_package request;
 	int len = socket_server_open_request(ss, &request, opaque, addr, port);
@@ -1180,7 +1217,7 @@ int socket_server_connect(struct socket_server *ss, uintptr_t opaque, const char
 
 
 
-int  socket_server_block_connect(struct socket_server *ss, uintptr_t opaque, const char * addr, int port)
+int  socket_server_block_connect(struct socket_server *ss, unsigned int opaque, const char * addr, int port)
 {
 	struct request_package request;
 	struct socket_message result;
@@ -1233,13 +1270,14 @@ void socket_server_close(struct socket_server *ss, unsigned int opaque, int id)
 static int socket_server_do_listen(const char * host, int port, int backlog)
 {
 
-	uint32_t addr = INADDR_ANY;
+	unsigned int addr = INADDR_ANY;
 	if (host[0]) 
 	{
 		addr=inet_addr(host);
 	}
 	int listen_fd = socket(AF_INET, SOCK_STREAM, 0);
-	if (listen_fd < 0) {
+	if (listen_fd < 0) 
+	{
 		return -1;
 	}
 
@@ -1271,7 +1309,7 @@ _failed:
 }
 
 
-int  socket_server_listen(struct socket_server *ss, uintptr_t opaque, const char * addr, int port, int backlog)
+int  socket_server_listen(struct socket_server *ss, unsigned int opaque, const char * addr, int port, int backlog)
 {
 	int fd = socket_server_do_listen(addr, port, backlog);
 	if (fd < 0) 
@@ -1287,7 +1325,7 @@ int  socket_server_listen(struct socket_server *ss, uintptr_t opaque, const char
 	return id;
 }
 
-int socket_server_bind(struct socket_server *ss, uintptr_t opaque, int fd) {
+int socket_server_bind(struct socket_server *ss, unsigned int opaque, int fd) {
 	struct request_package request;
 	int id = socket_server_alloc_id(ss);
 	request.u.bind.opaque = opaque;
@@ -1297,7 +1335,8 @@ int socket_server_bind(struct socket_server *ss, uintptr_t opaque, int fd) {
 	return id;
 }
 
-void socket_server_start(struct socket_server *ss, uintptr_t opaque, int id) {
+void socket_server_start(struct socket_server *ss, unsigned int opaque, int id)
+{
 	struct request_package request;
 	request.u.start.id = id;
 	request.u.start.opaque = opaque;
