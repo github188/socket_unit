@@ -546,7 +546,7 @@ static int socket_server_send_buffer(void * server_handle,struct socket * s,stru
 	if(NULL==server_handle || NULL==s || NULL==ret_msg)
 	{
 		dbg_printf("check the param!\n");
-		return(0);
+		return(-1);
 	}
 	struct socket_server * handle = (struct socket_server *)server_handle;
 
@@ -709,11 +709,600 @@ static int socket_server_send_socket(void *server_handle,struct request_send * r
 
 
 
+static  int socket_server_listen_socket(void *server_handle,struct request_listen * request,struct socket_message * ret_msg)
+{
+	if(NULL==server_handle || NULL==request || NULL==ret_msg)
+	{
+		dbg_printf("check the param!\n");
+		return(-1);
+	}
+	int id = request->id;
+	int listen_fd =request->fd;
+	struct socket_server * handle = (struct socket_server *)server_handle;
+
+	struct socket * socket_node = socket_server_new_fd(handle,id,listen_fd,request->opaque,false);
+	if(NULL == socket_node )
+	{
+		dbg_printf("socket_server_new_fd is fail!\n");
+		close(listen_fd);
+		ret_msg->opaque = request->opaque;
+		ret_msg->id = id;
+		ret_msg->ud = 0;
+		ret_msg->data = NULL;
+		handle->slot[id % MAX_SOCKET].type = SOCKET_TYPE_INVALID;
+		return(-1);
+	}
+	socket_node->type = SOCKET_TYPE_PLISTEN;
+	return(0);
+	
+}
+
+
+static int socket_server_close_socket(void *server_handle,struct request_close * request,struct socket_message * ret_msg)
+{
+
+	int ret = -1;
+	if(NULL==server_handle || NULL==request || NULL==ret_msg)
+	{
+		dbg_printf("check the param!\n");
+		return(-1);
+	}
+	
+	struct socket_server * handle = (struct socket_server *)server_handle;
+	
+	int id = request->id;
+	struct socket * socket_node =  &(handle->slot[id % MAX_SOCKET]);
+
+	if(SOCKET_TYPE_INVALID==socket_node->type || id != socket_node->id)
+	{
+		ret_msg->id = id;
+		ret_msg->opaque = request->opaque;
+		ret_msg->ud = 0;
+		ret_msg->data = NULL;
+		return SOCKET_CLOSE;
+	}
+
+	if(NULL != socket_node->head)
+	{
+		ret = socket_server_send_buffer(handle,socket_node,ret_msg);		
+		if(ret != 0)return(ret);
+	}
+
+
+	if(NULL == socket_node->head)/*数据发送完毕*/
+	{
+		socket_server_force_close(handle,socket_node,ret_msg);
+		ret_msg->id = id;
+		ret_msg->opaque = request->opaque;
+		return SOCKET_CLOSE;
+	}
+	socket_node->type = SOCKET_TYPE_HALFCLOSE;
+	return(0);
+	
+}
+
+
+
+
+// 将stdin、stdout这种类型的文件描述符加入epoll管理，这种类型称之为SOCKET_TYPE_BIND
+
+static int socket_server_bind_socket(void *server_handle,struct request_bind * request,struct socket_message * ret_msg)
+{
+	if(NULL==server_handle || NULL==request || NULL==ret_msg)
+	{
+		dbg_printf("please check the param!\n");
+		return(-1);
+	}
+	struct socket_server * handle = (struct socket_server *)server_handle;
+	int id = request->id;
+	ret_msg->id = id;
+	ret_msg->opaque = request->opaque;
+	ret_msg->ud = 0;
+	struct socket * socket_node = socket_server_new_fd(handle,id,request->fd,request->opaque,true);
+	if(NULL == socket_node)
+	{
+		dbg_printf("socket_server_new_fd is fail !\n");
+		ret_msg->data = NULL;
+		return(-1);
+	}
+	sp_nonblocking(request->fd);
+	ret_msg->data"bind";
+	return(0);
+}
 
 
 
 
 
+static int socket_server_start_socket(void *server_handle,struct request_start * request,struct socket_message * ret_msg)
+{
+	if(NULL==server_handle || NULL==request || NULL==ret_msg)
+	{
+		dbg_printf("please check the param!\n");
+		return(-1);
+	}
+
+	int id = request->id;
+	struct socket_server * handle = (struct socket_server *)server_handle;
+	ret_msg->id = request->id;
+	ret_msg->ud = 0;
+	ret_msg->data = NULL;
+	ret_msg->opaque = request->opaque;
+	struct socket * socket_node = handle->slot[id % MAX_SOCKET];
+	if(SOCKET_TYPE_INVALID==socket_node->type || id != socket_node->id)
+	{
+		dbg_printf("not peer !\n");
+		return(-1);
+	}
+
+	if(SOCKET_TYPE_PACCEPT==socket_node->type || SOCKET_TYPE_PLISTEN==socket_node->type)
+	{
+
+		if(sp_add(handle->event_fd,socket_node->fd,socket_node))
+		{
+			socket_node->type = SOCKET_TYPE_INVALID;
+			return(-1);
+
+		}
+		socket_node->type = (socket_node->type == SOCKET_TYPE_PACCEPT) ? SOCKET_TYPE_CONNECTED : SOCKET_TYPE_LISTEN;
+		socket_node->opaque = request->opaque;
+		ret_msg->data = "start";
+	}
+
+	return(0);
+}
+
+
+
+
+static int socket_server_read_pipe(int pipe_fd,void * buffer,int sz)
+{
+	for(; ; )
+	{
+		int n = read(pipe_fd,buffer,sz);
+		if(n < 0)
+		{
+			if(EINTR==errno)continue;
+			else
+				return(-1);
+		}
+		else
+		{
+			return(n);
+		}
+	}
+	return(0);
+}
+
+
+
+static int socket_server_has_cmd(void *server_handle)
+{
+	if(NULL==server_handle)
+	{
+		dbg_printf("check the param!\n");
+		return(-1);
+	}
+	struct socket_server * handle = (struct socket_server *)server_handle;
+	struct timeval tv = {0,0};
+	int retval;
+	FD_SET(handle->recvctrl_fd, &handle->rfds); 
+
+	retval = select(handle->recvctrl_fd+1, &handle->rfds, NULL, NULL, &tv);
+	return(retval);
+}
+
+
+
+static int socket_server_ctrl_cmd(struct socket_server *ss, struct socket_message *result)
+{
+	int fd = ss->recvctrl_fd;
+	unsigned char buffer[256];
+	unsigned char header[2];
+	socket_server_read_pipe(fd, header, sizeof(header));
+	int type = header[0];
+	int len = header[1];
+	socket_server_read_pipe(fd, buffer, len);
+	switch (type) 
+	{
+		case 'S':
+			return socket_server_start_socket(ss,(struct request_start *)buffer, result);
+		case 'B':
+			return socket_server_bind_socket(ss,(struct request_bind *)buffer, result);
+		case 'L':
+			return socket_server_listen_socket(ss,(struct request_listen *)buffer, result);
+		case 'K':
+			return socket_server_close_socket(ss,(struct request_close *)buffer, result); 
+		case 'O':
+			return socket_server_open_socket(ss, (struct request_open *)buffer, result, false);
+		case 'X':
+			result->opaque = 0;
+			result->id = 0;
+			result->ud = 0;
+			result->data = NULL;
+			return SOCKET_EXIT;
+		case 'D':
+			return socket_server_send_socket(ss, (struct request_send *)buffer, result);
+		default:
+			dbg_printf("socket-server: Unknown ctrl %c.\n",type);
+			return -1;
+	};
+
+	return 0;
+}
+
+
+
+static int socket_server_forward_message(struct socket_server *ss, struct socket *s, struct socket_message * result)
+{
+	int sz = s->size;
+	char * buffer = malloc(sz);
+	int n = (int)read(s->fd, buffer, sz);
+	if (n<0)
+	{
+		FREE(buffer);
+		switch(errno) 
+		{
+		case EINTR:
+			break;
+		case EAGAIN:
+			dbg_printf("socket-server: EAGAIN capture.\n");
+			break;
+		default:
+			socket_server_force_close(ss, s, result);	
+			return SOCKET_ERROR;
+		}
+		return -1;
+	}
+	if (n==0) 
+	{	
+		free(buffer);
+		socket_server_force_close(ss, s, result);
+		return SOCKET_CLOSE;
+	}
+
+	if (s->type == SOCKET_TYPE_HALFCLOSE)
+	{
+		free(buffer);
+		return -1;
+	}
+
+	if (n == sz)
+	{
+		s->size *= 2;
+	}
+	else if (sz > MIN_READ_BUFFER && n*2 < sz) 
+	{
+		s->size /= 2;	
+	}
+
+	result->opaque = s->opaque;
+	result->id = s->id;
+	result->ud = n;
+	result->data = buffer;
+	return SOCKET_DATA;
+}
+
+
+static int socket_server_report_connect(struct socket_server *ss, struct socket *s, struct socket_message *result) 
+{
+	int error;
+	socklen_t len = sizeof(error);  
+	int code = getsockopt(s->fd, SOL_SOCKET, SO_ERROR, &error, &len);  
+	if (code < 0 || error)
+	{  
+		socket_server_force_close(ss,s, result);
+		return SOCKET_ERROR;
+	} 
+	else
+	{
+		s->type = SOCKET_TYPE_CONNECTED; 
+		result->opaque = s->opaque;
+		result->id = s->id;
+		result->ud = 0;
+		sp_write(ss->event_fd, s->fd, s, false);	// 连接成功，取消关注可写事件
+		union sockaddr_all u;
+		socklen_t slen = sizeof(u);
+		if (getpeername(s->fd, &u.s, &slen) == 0)
+		{
+			void * sin_addr = (u.s.sa_family == AF_INET) ? (void*)&u.v4.sin_addr : (void *)&u.v6.sin6_addr;
+			if (inet_ntop(u.s.sa_family, sin_addr, ss->buffer, sizeof(ss->buffer))) {
+				result->data = ss->buffer;
+				return SOCKET_OPEN;
+			}
+		}
+		result->data = NULL;
+		return SOCKET_OPEN;
+	}
+}
+
+
+static int socket_server_report_accept(struct socket_server *ss, struct socket *s, struct socket_message *result) {
+	union sockaddr_all u;
+	socklen_t len = sizeof(u);
+	int client_fd = accept(s->fd, &u.s, &len);
+	if (client_fd < 0)
+	{
+		return 0;
+	}
+	int id = socket_server_alloc_id(ss);	
+	if (id < 0)
+	{		
+		close(client_fd);
+		return 0;
+	}
+	socket_server_keep_alive(client_fd);
+	sp_nonblocking(client_fd);	
+	struct socket *ns = socket_server_new_fd(ss, id, client_fd, s->opaque, false);
+	if (ns == NULL)
+	{
+		close(client_fd);
+		return 0;
+	}
+	ns->type = SOCKET_TYPE_PACCEPT;
+	result->opaque = s->opaque;
+	result->id = s->id;
+	result->ud = id;
+	result->data = NULL;
+
+	void * sin_addr = (u.s.sa_family == AF_INET) ? (void*)&u.v4.sin_addr : (void *)&u.v6.sin6_addr;
+	if (inet_ntop(u.s.sa_family, sin_addr, ss->buffer, sizeof(ss->buffer))) 
+	{
+		result->data = ss->buffer;
+	}
+
+	return 1;
+}
+
+
+
+int  socket_server_poll(struct socket_server *ss, struct socket_message * result, int * more) {
+	for (;;) 
+	{
+		if (ss->checkctrl)
+		{
+			if (socket_server_has_cmd(ss))
+			{
+				int type = socket_server_ctrl_cmd(ss, result);
+				if (type != -1)
+					return type;
+				else
+					continue;
+			} 
+			else 
+			{ 
+				ss->checkctrl = 0;
+			}
+		}
+
+		
+		if (ss->event_index == ss->event_n)
+		{
+			ss->event_n = sp_wait(ss->event_fd, ss->ev, MAX_EVENT);
+			ss->checkctrl = 1;
+			if (more)
+			{
+				*more = 0;
+			}
+			ss->event_index = 0;
+			if (ss->event_n <= 0)
+			{
+				ss->event_n = 0;
+				return -1;
+			}
+		}
+		struct event *e = &ss->ev[ss->event_index++];
+		struct socket *s = e->s;
+		if (s == NULL) {
+			// dispatch pipe message at beginning
+			continue;
+		}
+		switch (s->type) {
+		case SOCKET_TYPE_CONNECTING: /*正在进行连接*/
+			return socket_server_report_connect(ss, s, result);
+		case SOCKET_TYPE_LISTEN:
+			if (socket_server_report_accept(ss, s, result)) {
+				return SOCKET_ACCEPT;
+			} 
+			break;
+		case SOCKET_TYPE_INVALID:
+			dbg_printf("socket-server: invalid socket\n");
+			break;
+		default:
+			if (e->write)
+			{
+				int type = socket_server_send_buffer(ss, s, result);	
+				if (type == -1)
+					break;
+				return type;
+			}
+			if (e->read)
+			{
+				int type = socket_server_forward_message(ss, s, result);
+				if (type == -1)
+					break;
+				return type;
+			}
+			break;
+		}
+	}
+}
+
+
+
+
+static void socket_server_send_request(struct socket_server *ss, struct request_package *request, char type, int len)
+{
+	request->header[6] = (unsigned char)type;
+	request->header[7] = (unsigned char)len;
+	for (;;)
+	{
+		int n = write(ss->sendctrl_fd, &request->header[6], len+2);
+		if (n<0) 
+		{
+			if (errno != EINTR) 
+			{
+				dbg_printf("socket-server : send ctrl command error %s.\n", strerror(errno));
+			}
+			continue;
+		}
+		return;
+	}
+}
+
+
+
+static int socket_server_open_request(struct socket_server *ss, struct request_package *req, uintptr_t opaque, const char *addr, int port)
+{
+	int len = strlen(addr);
+	if (len + sizeof(req->u.open) > 256)
+	{
+		dbg_printf("socket-server : Invalid addr %s.\n",addr);
+		return 0;
+	}
+	int id = socket_server_alloc_id(ss);	
+	req->u.open.opaque = opaque;
+	req->u.open.id = id;
+	req->u.open.port = port;
+	memcpy(req->u.open.host, addr, len);
+	req->u.open.host[len] = '\0';
+
+	return len;
+}
+
+int socket_server_connect(struct socket_server *ss, uintptr_t opaque, const char * addr, int port)
+{
+	struct request_package request;
+	int len = socket_server_open_request(ss, &request, opaque, addr, port);
+	socket_server_send_request(ss, &request, 'O', sizeof(request.u.open) + len);
+	return request.u.open.id;
+}
+
+
+
+int  socket_server_block_connect(struct socket_server *ss, uintptr_t opaque, const char * addr, int port)
+{
+	struct request_package request;
+	struct socket_message result;
+	socket_server_open_request(ss, &request, opaque, addr, port);
+	int ret = socket_server_open_socket(ss, &request.u.open, &result, true);
+	if (ret == SOCKET_OPEN)
+	{
+		return result.id;
+	}
+	else 
+	{
+		return -1;
+	}
+}
+
+
+int socket_server_send(struct socket_server *ss, int id, const void * buffer, int sz)
+{
+	struct socket * s = &ss->slot[id % MAX_SOCKET];
+	if (s->id != id || s->type == SOCKET_TYPE_INVALID)
+	{
+		return -1;
+	}
+
+	struct request_package request;
+	request.u.send.id = id;
+	request.u.send.sz = sz;
+	request.u.send.buffer = (char *)buffer;
+
+	socket_server_send_request(ss, &request, 'D', sizeof(request.u.send));
+	return s->wb_size;
+}
+
+void socket_server_exit(struct socket_server *ss)
+{
+	struct request_package request;
+	socket_server_send_request(ss, &request, 'X', 0);
+}
+
+
+
+void socket_server_close(struct socket_server *ss, unsigned int opaque, int id)
+{
+	struct request_package request;
+	request.u.close.id = id;
+	request.u.close.opaque = opaque;
+	socket_server_send_request(ss, &request, 'K', sizeof(request.u.close));
+}
+
+static int socket_server_do_listen(const char * host, int port, int backlog)
+{
+
+	uint32_t addr = INADDR_ANY;
+	if (host[0]) 
+	{
+		addr=inet_addr(host);
+	}
+	int listen_fd = socket(AF_INET, SOCK_STREAM, 0);
+	if (listen_fd < 0) {
+		return -1;
+	}
+
+	int reuse = 1;
+	if (setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, (void *)&reuse, sizeof(int))==-1) 
+	{
+		goto _failed;
+	}
+
+	struct sockaddr_in my_addr;
+	memset(&my_addr, 0, sizeof(struct sockaddr_in));
+	my_addr.sin_family = AF_INET;
+	my_addr.sin_port = htons(port);
+	my_addr.sin_addr.s_addr = addr;
+	
+	if (bind(listen_fd, (struct sockaddr *)&my_addr, sizeof(struct sockaddr)) == -1)
+	{
+		goto _failed;
+	}
+	
+	if (listen(listen_fd, backlog) == -1) 
+	{
+		goto _failed;
+	}
+	return listen_fd;
+_failed:
+	close(listen_fd);
+	return -1;
+}
+
+
+int  socket_server_listen(struct socket_server *ss, uintptr_t opaque, const char * addr, int port, int backlog)
+{
+	int fd = socket_server_do_listen(addr, port, backlog);
+	if (fd < 0) 
+	{
+		return -1;
+	}
+	struct request_package request;
+	int id = socket_server_alloc_id(ss);
+	request.u.listen.opaque = opaque;
+	request.u.listen.id = id;
+	request.u.listen.fd = fd;
+	socket_server_send_request(ss, &request, 'L', sizeof(request.u.listen)); 
+	return id;
+}
+
+int socket_server_bind(struct socket_server *ss, uintptr_t opaque, int fd) {
+	struct request_package request;
+	int id = socket_server_alloc_id(ss);
+	request.u.bind.opaque = opaque;
+	request.u.bind.id = id;
+	request.u.bind.fd = fd;
+	socket_server_send_request(ss, &request, 'B', sizeof(request.u.bind));
+	return id;
+}
+
+void socket_server_start(struct socket_server *ss, uintptr_t opaque, int id) {
+	struct request_package request;
+	request.u.start.id = id;
+	request.u.start.opaque = opaque;
+	socket_server_send_request(ss, &request, 'S', sizeof(request.u.start)); /*启动*/
+}
 
 
 
