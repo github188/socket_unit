@@ -11,6 +11,18 @@
 #define SOCKET_EXIT 5		// ÍË³öÊÂ¼ş
 
 
+struct socket_message 
+{
+	int id;
+	unsigned int opaque;	
+	int ud;		
+	char * data;
+};
+
+struct socket_server;
+void * socket_server_create_handle(void);
+int socket_server_release_handle(void * server_handle);
+void socket_server_start(struct socket_server *ss, unsigned int opaque, int id);
 
 
 #endif  /*_socket_server_h*/

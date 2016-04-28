@@ -107,13 +107,7 @@ struct socket_server
 };
 
 
-struct socket_message 
-{
-	int id;
-	unsigned int opaque;	
-	int ud;		
-	char * data;
-};
+
 
 
 
@@ -292,7 +286,7 @@ void * socket_server_create_handle(void)
 	new_handle->check_ctrl = 1;
 	for(i=0;i<MAX_SOCKET;++i)
 	{
-		struct socket * socket_node =  &new_handle->slot[i];
+		struct socket * socket_node =  &(new_handle->slot[i]);
 		socket_node->type = SOCKET_TYPE_INVALID;
 		socket_node->head = NULL;
 		socket_node->tail = NULL;
@@ -439,7 +433,8 @@ static struct socket * socket_server_new_fd(void * server_handle,int id,int fd,u
 
 	struct socket_server * handle = (struct socket_server *)server_handle;
 	struct socket * socket_node = &(handle->slot[id % MAX_SOCKET]);
-	if(SOCKET_TYPE_INVALID != socket_node->type)
+	dbg_printf("socket_node->type===%d\n",socket_node->type);
+	if(SOCKET_TYPE_RESERVE != socket_node->type)
 	{
 		dbg_printf("the socket has been used !\n");
 		return(NULL);
@@ -533,6 +528,7 @@ static int socket_server_open_socket(void * server_handle,struct request_open * 
 		goto fail;
 	}
 
+	dbg_printf("request->id===%d\n",request->id);
 	socket_node = socket_server_new_fd(handle, request->id, sock, request->opaque, true);
 	if (socket_node == NULL)
 	{
@@ -946,6 +942,7 @@ static int socket_server_ctrl_cmd(struct socket_server *ss, struct socket_messag
 		case 'K':
 			return socket_server_close_socket(ss,(struct request_close *)buffer, result); 
 		case 'O':
+			dbg_printf("O\n");
 			return socket_server_open_socket(ss, (struct request_open *)buffer, result, false);
 		case 'X':
 			result->opaque = 0;
@@ -986,7 +983,9 @@ static int socket_server_forward_message(struct socket_server *ss, struct socket
 		}
 		return -1;
 	}
-	if (n==0) 
+
+	
+	if(n==0) 
 	{	
 		free(buffer);
 		socket_server_force_close(ss, s, result);
@@ -1092,10 +1091,13 @@ int  socket_server_poll(struct socket_server *ss, struct socket_message * result
 {
 	for (;;) 
 	{
+		dbg_printf("1\n");
 		if (ss->check_ctrl)
-		{
+		{	
+		dbg_printf("2\n");
 			if (socket_server_has_cmd(ss))
 			{
+				dbg_printf("3\n");
 				int type = socket_server_ctrl_cmd(ss, result);
 				if (type != -1)
 					return type;
@@ -1104,6 +1106,7 @@ int  socket_server_poll(struct socket_server *ss, struct socket_message * result
 			} 
 			else 
 			{ 
+				dbg_printf("4\n");
 				ss->check_ctrl = 0;
 			}
 		}
@@ -1111,6 +1114,7 @@ int  socket_server_poll(struct socket_server *ss, struct socket_message * result
 		
 		if (ss->event_index == ss->event_n)
 		{
+			dbg_printf("5\n");
 			ss->event_n = sp_wait(ss->event_fd, ss->ev, MAX_EVENT);
 			ss->check_ctrl = 1;
 			if (more)
@@ -1196,7 +1200,8 @@ static int socket_server_open_request(struct socket_server *ss, struct request_p
 		dbg_printf("socket-server : Invalid addr %s.\n",addr);
 		return 0;
 	}
-	int id = socket_server_alloc_id(ss);	
+	int id = socket_server_alloc_id(ss);
+	dbg_printf("the id is %d\n",id);
 	req->u.open.opaque = opaque;
 	req->u.open.id = id;
 	req->u.open.port = port;
