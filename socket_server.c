@@ -748,6 +748,7 @@ static  int socket_server_listen_socket(void *server_handle,struct request_liste
 	int listen_fd =request->fd;
 	struct socket_server * handle = (struct socket_server *)server_handle;
 
+	dbg_printf("socket_server_listen_socket:\n");
 	struct socket * socket_node = socket_server_new_fd(handle,id,listen_fd,request->opaque,false);
 	if(NULL == socket_node )
 	{
@@ -761,7 +762,7 @@ static  int socket_server_listen_socket(void *server_handle,struct request_liste
 		return(-1);
 	}
 	socket_node->type = SOCKET_TYPE_PLISTEN;
-	return(0);
+	return(-1);
 	
 }
 
@@ -826,6 +827,7 @@ static int socket_server_bind_socket(void *server_handle,struct request_bind * r
 	ret_msg->id = id;
 	ret_msg->opaque = request->opaque;
 	ret_msg->ud = 0;
+	dbg_printf("socket_server_bind_socket\n");
 	struct socket * socket_node = socket_server_new_fd(handle,id,request->fd,request->opaque,true);
 	if(NULL == socket_node)
 	{
@@ -877,7 +879,7 @@ static int socket_server_start_socket(void *server_handle,struct request_start *
 		ret_msg->data = "start";
 	}
 
-	return(0);
+	return(-1);
 }
 
 
@@ -934,12 +936,16 @@ static int socket_server_ctrl_cmd(struct socket_server *ss, struct socket_messag
 	switch (type) 
 	{
 		case 'S':
+			dbg_printf("S\n");
 			return socket_server_start_socket(ss,(struct request_start *)buffer, result);
 		case 'B':
+			dbg_printf("B\n");
 			return socket_server_bind_socket(ss,(struct request_bind *)buffer, result);
 		case 'L':
+			dbg_printf("L\n");
 			return socket_server_listen_socket(ss,(struct request_listen *)buffer, result);
 		case 'K':
+			dbg_printf("K\n");
 			return socket_server_close_socket(ss,(struct request_close *)buffer, result); 
 		case 'O':
 			dbg_printf("O\n");
@@ -951,6 +957,14 @@ static int socket_server_ctrl_cmd(struct socket_server *ss, struct socket_messag
 			result->data = NULL;
 			return SOCKET_EXIT;
 		case 'D':
+
+			while(1)
+			{
+				dbg_printf("D\n");
+				sleep(6);
+			}
+			
+		
 			return socket_server_send_socket(ss, (struct request_send *)buffer, result);
 		default:
 			dbg_printf("socket-server: Unknown ctrl %c.\n",type);
@@ -1064,6 +1078,7 @@ static int socket_server_report_accept(struct socket_server *ss, struct socket *
 	}
 	socket_server_keep_alive(client_fd);
 	sp_nonblocking(client_fd);	
+	dbg_printf("socket_server_report_accept\n");
 	struct socket *ns = socket_server_new_fd(ss, id, client_fd, s->opaque, false);
 	if (ns == NULL)
 	{
@@ -1094,11 +1109,12 @@ int  socket_server_poll(struct socket_server *ss, struct socket_message * result
 		dbg_printf("1\n");
 		if (ss->check_ctrl)
 		{	
-		dbg_printf("2\n");
+			dbg_printf("2\n");
 			if (socket_server_has_cmd(ss))
 			{
 				dbg_printf("3\n");
 				int type = socket_server_ctrl_cmd(ss, result);
+				dbg_printf("type==%d\n",type);
 				if (type != -1)
 					return type;
 				else
@@ -1137,9 +1153,13 @@ int  socket_server_poll(struct socket_server *ss, struct socket_message * result
 		}
 		switch (s->type) 
 		{
-		case SOCKET_TYPE_CONNECTING: /*正在进行连接*/
+		
+		case SOCKET_TYPE_CONNECTING: 
+			dbg_printf("SOCKET_TYPE_CONNECTING\n");
 			return socket_server_report_connect(ss, s, result);
+			
 		case SOCKET_TYPE_LISTEN:
+			dbg_printf("SOCKET_TYPE_LISTEN\n");
 			if (socket_server_report_accept(ss, s, result)) 
 			{
 				return SOCKET_ACCEPT;
@@ -1150,18 +1170,24 @@ int  socket_server_poll(struct socket_server *ss, struct socket_message * result
 			break;
 		default:
 			if (e->write)
-			{
+			{	
+				#if 1
 				int type = socket_server_send_buffer(ss, s, result);	
 				if (type == -1)
 					break;
+
 				return type;
+				#endif
+				
 			}
 			if (e->read)
 			{
+				#if 1
 				int type = socket_server_forward_message(ss, s, result);
 				if (type == -1)
 					break;
 				return type;
+				#endif
 			}
 			break;
 		}
@@ -1272,6 +1298,9 @@ void socket_server_close(struct socket_server *ss, unsigned int opaque, int id)
 	socket_server_send_request(ss, &request, 'K', sizeof(request.u.close));
 }
 
+
+
+
 static int socket_server_do_listen(const char * host, int port, int backlog)
 {
 
@@ -1279,16 +1308,20 @@ static int socket_server_do_listen(const char * host, int port, int backlog)
 	if (host[0]) 
 	{
 		addr=inet_addr(host);
+		dbg_printf("%s\n",host);
+		
 	}
 	int listen_fd = socket(AF_INET, SOCK_STREAM, 0);
 	if (listen_fd < 0) 
 	{
+		dbg_printf("socket is fail!\n");
 		return -1;
 	}
 
 	int reuse = 1;
 	if (setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, (void *)&reuse, sizeof(int))==-1) 
 	{
+		dbg_printf("setsockopt is fail!\n");
 		goto _failed;
 	}
 
@@ -1300,11 +1333,13 @@ static int socket_server_do_listen(const char * host, int port, int backlog)
 	
 	if (bind(listen_fd, (struct sockaddr *)&my_addr, sizeof(struct sockaddr)) == -1)
 	{
+		dbg_printf("bind is fail!\n");
 		goto _failed;
 	}
 	
 	if (listen(listen_fd, backlog) == -1) 
 	{
+		dbg_printf("listen is fail!\n");
 		goto _failed;
 	}
 	return listen_fd;
@@ -1314,21 +1349,30 @@ _failed:
 }
 
 
+
+
 int  socket_server_listen(struct socket_server *ss, unsigned int opaque, const char * addr, int port, int backlog)
 {
 	int fd = socket_server_do_listen(addr, port, backlog);
 	if (fd < 0) 
 	{
+		dbg_printf("socket_server_do_listen is fail!\n");
 		return -1;
 	}
 	struct request_package request;
 	int id = socket_server_alloc_id(ss);
+
+	dbg_printf("id=====%d\n",id);
+	
 	request.u.listen.opaque = opaque;
 	request.u.listen.id = id;
 	request.u.listen.fd = fd;
 	socket_server_send_request(ss, &request, 'L', sizeof(request.u.listen)); 
 	return id;
 }
+
+
+
 
 int socket_server_bind(struct socket_server *ss, unsigned int opaque, int fd) {
 	struct request_package request;

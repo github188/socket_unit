@@ -11,6 +11,7 @@
 #include <fcntl.h>
 #include "common.h"
 
+
 static bool sp_invalid(int efd) 
 {
 	return efd == -1;

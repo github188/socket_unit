@@ -29,20 +29,20 @@ static void * _poll(void * ud)
 		case SOCKET_EXIT:
 			return NULL;
 		case SOCKET_DATA:
-			printf("message [id=%d] size=%d\n",result.id, result.ud);
+			dbg_printf("message [id=%d] size=%d\n",result.id, result.ud);
 			free(result.data);
 			break;
 		case SOCKET_CLOSE:
-			printf("close [id=%d]\n",result.id);
+			dbg_printf("close [id=%d]\n",result.id);
 			break;
 		case SOCKET_OPEN:
-			printf("open [id=%d] %s\n",result.id,result.data);
+			dbg_printf("open [id=%d] %s\n",result.id,result.data);
 			break;
 		case SOCKET_ERROR:
-			printf("error [id=%d]\n",result.id);
+			dbg_printf("error [id=%d]\n",result.id);
 			break;
 		case SOCKET_ACCEPT:
-			printf("accept [id=%d %s] from [%d]\n",result.ud, result.data, result.id);
+			dbg_printf("accept [id=%d %s] from [%d]\n",result.ud, result.data, result.id);
 			socket_server_start(ss, 300, result.ud);
 			break;
 		}
