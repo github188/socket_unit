@@ -23,36 +23,38 @@ int main(void)
 	}
 
 
-	int listen_id = socket_server_listen(ss, 100, "", 8888, 32);
+	int listen_id = socket_server_listen(ss, 100, "", 8888, 32);/*监听套接字在这里没有加入eventfd中*/
 	
-	socket_server_start(ss, 200, listen_id);
+	socket_server_start(ss, 200, listen_id);  /*监听套接字在这里进行了加入*/
 
-	// 事件循环
+
 	struct socket_message result;
-	for (;;) {
+	for (;;) 
+	{
 		int type = socket_server_poll(ss, &result, NULL);
 		// DO NOT use any ctrl command (socket_server_close , etc. ) in this thread.
-		switch (type) {
-		case SOCKET_EXIT:
-			goto EXIT_LOOP;
-		case SOCKET_DATA:
-			dbg_printf("message [id=%d] size=%d\n",result.id, result.ud);
-			socket_server_send(ss, result.id, result.data, result.ud);
-			//free(result.data);
-			break;
-		case SOCKET_CLOSE:
-			dbg_printf("close [id=%d]\n",result.id);
-			break;
-		case SOCKET_OPEN:
-			dbg_printf("open [id=%d] %s\n",result.id,result.data);
-			break;
-		case SOCKET_ERROR:
-			dbg_printf("error [id=%d]\n",result.id);
-			break;
-		case SOCKET_ACCEPT:
-			dbg_printf("accept [id=%d %s] from [%d]\n", result.ud, result.data, result.id);
-			socket_server_start(ss, 300, result.ud);
-			break;
+		switch (type)
+		{
+			case SOCKET_EXIT:
+				goto EXIT_LOOP;
+			case SOCKET_DATA:
+				dbg_printf("message [id=%d] size=%d\n",result.id, result.ud);
+				socket_server_send(ss, result.id, result.data, result.ud);
+			//	free(result.data);
+				break;
+			case SOCKET_CLOSE:
+				dbg_printf("close [id=%d]\n",result.id);
+				break;
+			case SOCKET_OPEN:
+				dbg_printf("open [id=%d] %s\n",result.id,result.data);
+				break;
+			case SOCKET_ERROR:
+				dbg_printf("error [id=%d]\n",result.id);
+				break;
+			case SOCKET_ACCEPT:
+				dbg_printf("accept [id=%d %s] from [%d]\n", result.ud, result.data, result.id);
+				socket_server_start(ss, 300, result.ud);
+				break;
 		}
 	}
 

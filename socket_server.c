@@ -629,7 +629,7 @@ static int socket_server_send_buffer(void * server_handle,struct socket * s,stru
 	}
 
 
-	return(0);
+	return(-1);
 	
 }
 
@@ -715,7 +715,9 @@ static int socket_server_send_socket(void *server_handle,struct request_send * r
 		}
 		if(n == request->sz)
 		{
-			return(0);
+			free(request->buffer);
+			request->buffer = NULL;
+			return(-1);
 		}
 		else  /*没有写完*/
 		{
@@ -732,7 +734,7 @@ static int socket_server_send_socket(void *server_handle,struct request_send * r
 		return(-1);
 	
 	}
-	return(0);
+	return(-1);
 }
 
 
@@ -872,8 +874,8 @@ static int socket_server_start_socket(void *server_handle,struct request_start *
 		{
 			socket_node->type = SOCKET_TYPE_INVALID;
 			return(-1);
-
 		}
+		/*在这里重新设定了套接字的类型,由预备变成正式*/
 		socket_node->type = (socket_node->type == SOCKET_TYPE_PACCEPT) ? SOCKET_TYPE_CONNECTED : SOCKET_TYPE_LISTEN;
 		socket_node->opaque = request->opaque;
 		ret_msg->data = "start";
@@ -951,6 +953,7 @@ static int socket_server_ctrl_cmd(struct socket_server *ss, struct socket_messag
 			dbg_printf("O\n");
 			return socket_server_open_socket(ss, (struct request_open *)buffer, result, false);
 		case 'X':
+			dbg_printf("X\n");
 			result->opaque = 0;
 			result->id = 0;
 			result->ud = 0;
@@ -958,13 +961,7 @@ static int socket_server_ctrl_cmd(struct socket_server *ss, struct socket_messag
 			return SOCKET_EXIT;
 		case 'D':
 
-			while(1)
-			{
-				dbg_printf("D\n");
-				sleep(6);
-			}
-			
-		
+			dbg_printf("D\n");
 			return socket_server_send_socket(ss, (struct request_send *)buffer, result);
 		default:
 			dbg_printf("socket-server: Unknown ctrl %c.\n",type);
@@ -1061,7 +1058,7 @@ static int socket_server_report_connect(struct socket_server *ss, struct socket 
 	}
 }
 
-
+/*listen 监听到连接请求*/
 static int socket_server_report_accept(struct socket_server *ss, struct socket *s, struct socket_message *result) {
 	union sockaddr_all u;
 	socklen_t len = sizeof(u);
@@ -1070,14 +1067,14 @@ static int socket_server_report_accept(struct socket_server *ss, struct socket *
 	{
 		return 0;
 	}
-	int id = socket_server_alloc_id(ss);	
+	int id = socket_server_alloc_id(ss);  /*分配一个套接字*/	
 	if (id < 0)
 	{		
-		close(client_fd);
+		close(client_fd); /*分配失败，则进行关闭*/
 		return 0;
 	}
-	socket_server_keep_alive(client_fd);
-	sp_nonblocking(client_fd);	
+	socket_server_keep_alive(client_fd);/*关闭套接字的活性*/
+	sp_nonblocking(client_fd);	/*设置为非阻塞*/
 	dbg_printf("socket_server_report_accept\n");
 	struct socket *ns = socket_server_new_fd(ss, id, client_fd, s->opaque, false);
 	if (ns == NULL)
@@ -1085,7 +1082,7 @@ static int socket_server_report_accept(struct socket_server *ss, struct socket *
 		close(client_fd);
 		return 0;
 	}
-	ns->type = SOCKET_TYPE_PACCEPT;
+	ns->type = SOCKET_TYPE_PACCEPT; /*处于准备接收阶段*/
 	result->opaque = s->opaque;
 	result->id = s->id;
 	result->ud = id;
@@ -1171,23 +1168,25 @@ int  socket_server_poll(struct socket_server *ss, struct socket_message * result
 		default:
 			if (e->write)
 			{	
-				#if 1
+				dbg_printf("there is data to write!\n");
 				int type = socket_server_send_buffer(ss, s, result);	
 				if (type == -1)
 					break;
 
 				return type;
-				#endif
+				
 				
 			}
 			if (e->read)
 			{
-				#if 1
+				
+				dbg_printf("there is data to read!\n");
 				int type = socket_server_forward_message(ss, s, result);
+				dbg_printf("type==%d data==%s\n",type,result->data);
 				if (type == -1)
 					break;
 				return type;
-				#endif
+			
 			}
 			break;
 		}
